@@ -930,7 +930,16 @@ body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
   border: 1px solid rgb(var(--glow)); padding: 18px 30px 18px 36px; cursor: pointer; box-shadow: 0 0 22px rgba(var(--glow), .45), inset 0 0 18px rgba(var(--glow), .2); animation: gatepulse 1.6s ease-in-out infinite; }
 .gate .skip { background: none; border: 0; color: var(--muted); font: 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; text-decoration: underline; cursor: pointer; padding: 8px; }
 @keyframes gatepulse { 50% { box-shadow: 0 0 8px rgba(var(--glow), .3), inset 0 0 8px rgba(var(--glow), .1); } }
-body:has(.gate) .boot-music { display: none !important; }   /* one prompt at a time */
+body:has(.gate) .boot-music { display: none !important; }
+/* the Mute bar evaporating into the header's Mute button */
+.mist { position: fixed; inset: 0; z-index: 96; pointer-events: none; }
+.mist i { position: absolute; margin: -2px 0 0 -2px; border-radius: 50%; background: rgb(var(--glow)); box-shadow: 0 0 8px rgb(var(--glow)), 0 0 18px rgba(var(--glow), .55); }
+.amb.landed { animation: landed 1.5s ease-out; }
+@keyframes landed {
+  0% { border-color: #fff; color: #fff; box-shadow: 0 0 0 0 rgba(var(--glow), .95), 0 0 26px rgba(var(--glow), .95), inset 0 0 12px rgba(var(--glow), .6); }
+  35% { box-shadow: 0 0 0 10px rgba(var(--glow), .25), 0 0 34px rgba(var(--glow), .7); }
+  100% { box-shadow: 0 0 0 18px rgba(var(--glow), 0), 0 0 0 rgba(var(--glow), 0); }
+}   /* one prompt at a time */
 /* power-down: each piece flashes, then wipes out to the right */
 .b-out { animation: bout .18s ease-in both !important; }
 @keyframes bout { 0% { opacity: 1; } 35% { opacity: .5; filter: brightness(2.2); } 100% { opacity: 0; clip-path: inset(0 0 0 100%); filter: none; } }
@@ -1520,40 +1529,53 @@ renderStatus();
   wrap.addEventListener("pointerdown", e => { if (e.target === wrap) close(); });
 })();
 
-// ---------- sound check: does this browser allow audio without a tap? (phones don't; then the page asks for one tap to start the music) ----------
-window.glAudio = (() => {
-  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null;
-  let ctx = null;
-  return {
-    probe() { try { ctx = new AC(); ctx.resume().catch(() => {}); } catch (e) {} },
-    allowed: () => !!ctx && ctx.state === "running",
-    done() { try { ctx && ctx.close(); } catch (e) {} ctx = null; }
-  };
-})();
-
 // ---------- page build-up (every open and refresh): the page constructs itself piece by piece ----------
 (() => {
   const root = document.documentElement, calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let seen = false; try { seen = sessionStorage.getItem("gl-boot") === "1"; sessionStorage.setItem("gl-boot", "1"); } catch (e) {}
   let musicOn = true; try { musicOn = localStorage.getItem("gl-music") !== "off"; } catch (e) {}
+  // the INITIALIZE screen shows on every open, desktop and phone (reduced-motion skips the whole intro)
+  const gated = !calm; window.glGate = gated;
 
-  // ---- floating music bar: 3-second countdown with a big mute, then a tap prompt if the browser blocks sound ----
+  // ---- floating music bar: a big Mute for the first 7 seconds, then it evaporates into the Mute button at the top ----
   const bar = $("#bootMusic"), cnt = $("#bootCount"), mute = $("#bootMute");
   let muted = false;
-  const hideBar = ms => setTimeout(() => { bar.classList.add("off"); setTimeout(() => bar.hidden = true, 400); }, ms);
-  mute.addEventListener("click", e => { e.stopPropagation(); muted = true; bar.classList.remove("tap"); cnt.textContent = "Music off — press Play anytime"; mute.textContent = "Muted"; mute.disabled = true; window.glMusic && window.glMusic.mute(); hideBar(1800); });
-  window.glMusicBlocked = () => { if (muted || !musicOn) return; bar.hidden = false; bar.classList.remove("off"); bar.classList.add("tap"); cnt.textContent = "♫ Tap anywhere to start the music"; };
-  // the bar (with its big Mute button) stays up for 7 seconds each time the page opens
   const BAR_MS = 7000; let barEnd = 0, barTimer = 0;
-  const barFor = ms => { clearTimeout(barTimer); barEnd = performance.now() + ms; barTimer = setTimeout(() => { bar.classList.add("off"); setTimeout(() => { if (bar.classList.contains("off")) bar.hidden = true; }, 400); }, ms); };
-  window.glShowMusicBar = () => { if (muted || !(window.glMusic ? window.glMusic.wants() : musicOn)) return; bar.hidden = false; bar.classList.remove("off"); barFor(BAR_MS); };
+  const wantsMusic = () => window.glMusic ? window.glMusic.wants() : musicOn;
+  // the bar dissolves into a mist of glowing particles that drifts up into the header's Mute button, which flashes as it lands
+  function evaporate() {
+    if (bar.hidden) return;
+    const tgt = $("#ambBtn"), b = bar.getBoundingClientRect(), t = tgt && tgt.getBoundingClientRect();
+    const done = () => { bar.hidden = true; bar.classList.remove("off"); };
+    if (calm || !t || !t.width || !bar.animate) { bar.classList.add("off"); setTimeout(done, 400); return; }
+    const tx = t.left + t.width / 2, ty = t.top + t.height / 2;
+    const layer = document.createElement("div"); layer.className = "mist"; layer.setAttribute("aria-hidden", "true"); document.body.appendChild(layer);
+    for (let i = 0; i < 56; i++) {
+      const p = document.createElement("i"), x = b.left + Math.random() * b.width, y = b.top + Math.random() * b.height;
+      const sz = 2 + Math.random() * (Math.random() < .28 ? 14 : 4), dx = tx - x, dy = ty - y, sw = (Math.random() - .5) * 170;
+      p.style.cssText = "left:" + x + "px;top:" + y + "px;width:" + sz + "px;height:" + sz + "px;filter:blur(" + (sz > 7 ? (sz / 2.4).toFixed(1) : 0) + "px)";
+      p.animate([
+        { transform: "translate(0px, 0px) scale(.6)", opacity: 0 },
+        { transform: "translate(" + ((Math.random() - .5) * 34).toFixed(0) + "px, " + (-8 - Math.random() * 30).toFixed(0) + "px) scale(1.25)", opacity: .95, offset: .18 },
+        { transform: "translate(" + (dx * .55 + sw).toFixed(0) + "px, " + (dy * .55).toFixed(0) + "px) scale(1)", opacity: .7, offset: .6 },
+        { transform: "translate(" + dx.toFixed(0) + "px, " + dy.toFixed(0) + "px) scale(.2)", opacity: 0 }
+      ], { duration: 950 + Math.random() * 650, delay: Math.random() * 400, easing: "cubic-bezier(.45, 0, .25, 1)", fill: "both" });
+      layer.appendChild(p);
+    }
+    const fade = bar.animate([{ opacity: 1, filter: "blur(0px)", transform: "translate(-50%, 0px)" }, { opacity: 0, filter: "blur(12px)", transform: "translate(-50%, -18px) scale(1.08)" }], { duration: 700, easing: "ease-out", fill: "forwards" });
+    fade.finished.then(() => { done(); fade.cancel(); }, done);
+    setTimeout(() => { tgt.classList.remove("landed"); void tgt.offsetWidth; tgt.classList.add("landed"); }, 1100);
+    setTimeout(() => { layer.remove(); tgt.classList.remove("landed"); }, 2700);
+  }
+  const barFor = ms => { clearTimeout(barTimer); barEnd = performance.now() + ms; barTimer = setTimeout(evaporate, ms); };
+  mute.addEventListener("click", e => { e.stopPropagation(); muted = true; bar.classList.remove("tap"); cnt.textContent = "Music off — press Play anytime"; mute.textContent = "Muted"; mute.disabled = true; window.glMusic && window.glMusic.mute(); barFor(1300); });
+  window.glMusicBlocked = () => { if (muted || !wantsMusic()) return; clearTimeout(barTimer); bar.hidden = false; bar.classList.remove("off"); bar.classList.add("tap"); cnt.textContent = "♫ Tap anywhere to start the music"; };
+  window.glShowMusicBar = () => { if (muted || !wantsMusic()) return; bar.hidden = false; bar.classList.remove("off", "tap"); barFor(BAR_MS); };
   window.glMusicStarted = () => { if (muted) return; bar.classList.remove("tap"); cnt.textContent = "♫ Music on"; if (!bar.hidden) barFor(Math.max(2500, barEnd - performance.now())); };
-  if (musicOn) {
+  if (musicOn && !gated) {   // reduced motion: no INITIALIZE screen, so count down and start the music on its own
     window.glBootMs = 3000; window.glShowMusicBar();
     [3, 2, 1].forEach((n, i) => setTimeout(() => { if (!muted && !bar.classList.contains("tap") && cnt.textContent.indexOf("Music on") < 0) cnt.textContent = "♫ Music starts in " + n; }, i * 1000));
   }
   if (calm) return;   // runs on every open and refresh (desktop and phone); only reduced-motion skips it
-  if (window.glAudio) window.glAudio.probe();   // check early whether sound is allowed, so the browser has time to answer
 
   // ---- build-up ----
   root.classList.add("building");
@@ -1566,17 +1588,14 @@ window.glAudio = (() => {
     const now = performance.now(), has = document.querySelector("#items .item, #items .empty");
     if ((has && now - quietAt > 350) || now - t0 > 6000) { settle.disconnect(); ready(); } else requestAnimationFrame(wait);
   })();
-  // phones (and some browsers) only allow sound after a tap: if music is on and sound is blocked, ask for one tap first
+  // INITIALIZE: one click/tap starts the music and builds the page (browsers only allow sound after one); Skip builds it silently
   function ready() {
-    const A = window.glAudio, wantMusic = !!(window.glMusic && window.glMusic.wants()), ok = !A || A.allowed();
-    if (A) A.done();
-    if (!wantMusic || ok) return build();
     const g = document.createElement("div"); g.className = "gate"; g.setAttribute("role", "dialog"); g.setAttribute("aria-label", "Start the page");
-    g.innerHTML = `<div class="gate-in"><button type="button" class="go">Initialize</button><span>Tap to power up with music</span><button type="button" class="skip">Skip · no music</button></div>`;
+    g.innerHTML = '<div class="gate-in"><button type="button" class="go">Initialize</button><span>Power up with music</span><button type="button" class="skip">Skip · no music</button></div>';
     document.body.appendChild(g);
     g.addEventListener("click", e => {
       const skip = !!e.target.closest(".skip"); g.remove();
-      if (window.glMusic) { if (skip) window.glMusic.skip(); else { window.glMusic.start(true); window.glShowMusicBar && window.glShowMusicBar(); } }
+      if (window.glMusic) { if (skip) window.glMusic.skip(); else { window.glMusic.play(); window.glShowMusicBar && window.glShowMusicBar(); } }
       build();
     }, { once: true });
     g.querySelector(".go").focus();
@@ -1893,6 +1912,7 @@ window.glAudio = (() => {
   // Browsers only allow sound after you interact with the page, so it starts on your first click or key press.
   window.glMusic = { wants: () => want, start,
     mute() { want = false; try { localStorage.setItem("gl-music", "off"); } catch (e) {} stop(); },
+    play() { want = true; try { localStorage.setItem("gl-music", "on"); } catch (e) {} start(true); },   // INITIALIZE
     skip() { want = false; unarm(); if (playing) stop(); else { lbl.textContent = "Play"; btn.title = "Play music"; } }   // no music this visit only
   };
   const evs = ["pointerdown", "touchend", "click", "keydown"];
@@ -1904,11 +1924,12 @@ window.glAudio = (() => {
     if (!want) return unarm();
     if (!playing) start(true).then(ok => { if (ok) unarm(); });   // starts inside the tap itself so phones allow sound
   }
-  arm();
+  if (!window.glGate) arm();   // with the INITIALIZE screen, its tap starts the music instead
   // plays the song about a second after the page opens (if the browser blocks autoplay, it starts on your first click)
   // starts when the intro's 3-second countdown ends (or after a second when there's no intro); phones that block
   // autoplay start it on the first tap
-  if (want) setTimeout(() => { if (want && !playing) start(); }, window.glBootMs || 1000); else { lbl.textContent = "Play"; btn.title = "Play music"; }
+  if (want && !window.glGate) setTimeout(() => { if (want && !playing) start(); }, window.glBootMs || 1000);
+  else if (want) { lbl.textContent = "Music"; } else { lbl.textContent = "Play"; btn.title = "Play music"; }
 })();
 
 // ---------- Vector storm background: data streaks on a 24px grid that turn at 45/90 degree angles ----------
