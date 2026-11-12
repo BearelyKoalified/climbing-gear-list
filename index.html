@@ -935,6 +935,19 @@ body:has(.gate) .boot-music { display: none !important; }
 .mist { position: fixed; inset: 0; z-index: 96; pointer-events: none; }
 .mist i { position: absolute; margin: -2px 0 0 -2px; border-radius: 50%; background: rgb(var(--glow)); box-shadow: 0 0 8px rgb(var(--glow)), 0 0 18px rgba(var(--glow), .55); }
 .amb.landed { animation: landed 1.5s ease-out; }
+/* Next song button, styled to sit beside Mute */
+.nextb .nx { font-size: 10px; letter-spacing: -2px; margin-right: 2px; }
+.nextb:active { transform: translateY(1px); }
+/* after the mist lands: two light streaks race around the Mute button's border for 2 seconds, then fade out */
+.amb.spot { position: relative; border-color: rgba(var(--glow), .9); box-shadow: 0 0 14px rgba(var(--glow), .45); transition: border-color .6s, box-shadow .6s; }
+.amb.spot::after { content: ""; position: absolute; inset: -4px; padding: 2px; pointer-events: none;
+  background: conic-gradient(from var(--ta), transparent 0deg 110deg, rgba(var(--glow), .5) 150deg, #fff 175deg, transparent 180deg 290deg, rgba(var(--glow), .5) 330deg, #fff 355deg, transparent 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  filter: drop-shadow(0 0 4px rgb(var(--glow))); animation: spotrun .8s linear infinite, spotfade 2.6s ease-out forwards; }
+@keyframes spotrun { to { --ta: 360deg; } }
+@keyframes spotfade { 0%, 75% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .amb.spot::after { animation: spotfade 2.6s ease-out forwards; } }
 @keyframes landed {
   0% { border-color: #fff; color: #fff; box-shadow: 0 0 0 0 rgba(var(--glow), .95), 0 0 26px rgba(var(--glow), .95), inset 0 0 12px rgba(var(--glow), .6); }
   35% { box-shadow: 0 0 0 10px rgba(var(--glow), .25), 0 0 34px rgba(var(--glow), .7); }
@@ -980,6 +993,7 @@ body:has(.gate) .boot-music { display: none !important; }
     </div>
     <div class="hdr-act">
       <button class="amb amb-top" id="ambBtn" type="button" aria-pressed="false" title="Mute music"><span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span id="ambLbl">Music</span></button>
+      <button class="amb amb-top nextb" id="nextBtn" type="button" title="Next song" aria-label="Next song"><span class="nx" aria-hidden="true">▸▸</span><span>Next</span></button>
       <button class="hbtn" id="cmdBtn" type="button" title="Command bar (Ctrl+K)" aria-label="Open command bar"><kbd>Ctrl</kbd><kbd>K</kbd></button>
       <button class="hbtn" id="setBtn" type="button" aria-expanded="false" aria-controls="setPanel" title="Settings" aria-label="Settings">&#9881;</button>
     </div>
@@ -1565,6 +1579,9 @@ renderStatus();
     fade.finished.then(() => { done(); fade.cancel(); }, done);
     setTimeout(() => { tgt.classList.remove("landed"); void tgt.offsetWidth; tgt.classList.add("landed"); }, 1100);
     setTimeout(() => { layer.remove(); tgt.classList.remove("landed"); }, 2700);
+    // then 2 seconds of light racing around the button's border, fading back to normal
+    setTimeout(() => { tgt.classList.remove("spot"); void tgt.offsetWidth; tgt.classList.add("spot"); }, 1300);
+    setTimeout(() => tgt.classList.remove("spot"), 1300 + 2600);
   }
   const barFor = ms => { clearTimeout(barTimer); barEnd = performance.now() + ms; barTimer = setTimeout(evaporate, ms); };
   mute.addEventListener("click", e => { e.stopPropagation(); muted = true; bar.classList.remove("tap"); cnt.textContent = "Music off — press Play anytime"; mute.textContent = "Muted"; mute.disabled = true; window.glMusic && window.glMusic.mute(); barFor(1300); });
@@ -1763,7 +1780,8 @@ renderStatus();
 (function () {
   const btn = document.getElementById("ambBtn"), lbl = document.getElementById("ambLbl"), sel = document.getElementById("musicSel");
   const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) { btn.hidden = true; if (sel) sel.closest("label").hidden = true; return; }
+  const nextBtn = document.getElementById("nextBtn");
+  if (!AC) { btn.hidden = true; if (nextBtn) nextBtn.hidden = true; if (sel) sel.closest("label").hidden = true; return; }
   let want = true; try { want = localStorage.getItem("gl-music") !== "off"; } catch (e) {}
   let styleKey = "swfuture"; try { styleKey = localStorage.getItem("gl-music-style3") || "swfuture"; } catch (e) {}
   let ctx = null, master = null, analyser = null, playing = false;
@@ -1919,11 +1937,18 @@ renderStatus();
   const unarm = () => evs.forEach(ev => document.removeEventListener(ev, onFirst, true));
   const arm = () => evs.forEach(ev => document.addEventListener(ev, onFirst, true));
   function onFirst(e) {
-    if (e.target && e.target.closest && e.target.closest("#ambBtn, #musicSel, #bootMute, .gate")) return; // those handle themselves
+    if (e.target && e.target.closest && e.target.closest("#ambBtn, #nextBtn, #musicSel, #bootMute, .gate")) return; // those handle themselves
     if (e.type === "pointerdown" && e.pointerType !== "mouse") return;   // phones only allow sound when the tap ends (touchend / click)
     if (!want) return unarm();
     if (!playing) start(true).then(ok => { if (ok) unarm(); });   // starts inside the tap itself so phones allow sound
   }
+  // Next song: skips ahead while playing; when the music is off, it starts the next song
+  if (nextBtn) nextBtn.addEventListener("click", () => {
+    want = true; try { localStorage.setItem("gl-music", "on"); } catch (e) {}
+    if (playing) nextSong();
+    else { const keys = Object.keys(STYLES); styleKey = keys[(keys.indexOf(styleKey) + 1) % keys.length]; if (sel) sel.value = styleKey; start(true); }
+    try { localStorage.setItem("gl-music-style3", styleKey); } catch (e) {}
+  });
   if (!window.glGate) arm();   // with the INITIALIZE screen, its tap starts the music instead
   // plays the song about a second after the page opens (if the browser blocks autoplay, it starts on your first click)
   // starts when the intro's 3-second countdown ends (or after a second when there's no intro); phones that block
