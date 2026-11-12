@@ -332,6 +332,8 @@ body.drag-on { user-select: none; cursor: grabbing; }
 
 /* ===== Identity disc ===== */
 .ttl { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.ttl > div { min-width: 0; }   /* let the title column shrink, or the now-playing marquee stretches the page wider than a phone */
+html, body { overflow-x: hidden; }   /* safety net: nothing may widen the page sideways (mobile browsers zoom out and fixed UI lands off-screen) */
 .disc { flex: none; width: 76px; height: 76px; display: none; }
 .fxon .disc { display: block; filter: drop-shadow(0 0 6px rgba(var(--glow), .7)); }
 .disc svg { width: 100%; height: 100%; overflow: visible; }
@@ -797,7 +799,7 @@ select option:checked { background-color: rgba(var(--glow), .35); color: var(--f
 .np[hidden] { display: none; }
 .np-lbl { color: var(--kw); text-transform: uppercase; letter-spacing: .12em; flex: none; }
 .np-lbl::before { content: "\25b8  "; }
-.np-win { overflow: hidden; white-space: nowrap; flex: 1; -webkit-mask: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); mask: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); }
+.np-win { overflow: hidden; white-space: nowrap; flex: 1; min-width: 0; -webkit-mask: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); mask: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); }
 .np-t { display: inline-block; white-space: pre; animation: npscroll 26s linear infinite; }
 @keyframes npscroll { to { transform: translateX(-50%); } }
 /* ===== settings panel ===== */
@@ -1625,10 +1627,14 @@ window.glView = (() => {
     if (calm || !t || !t.width || !bar.animate) { bar.classList.add("off"); setTimeout(done, 400); return; }
     const sx = scrollX, sy = scrollY;   // everything below is in page coordinates, so it works however the page is framed
     const S = { x: b.left + b.width / 2 + sx, y: b.top + b.height / 2 + sy }, E = { x: t.left + t.width / 2 + sx, y: t.top + t.height / 2 + sy };
-    const C = { x: S.x * .25 + E.x * .75 + (E.x < S.x ? -70 : 70), y: S.y * .7 + E.y * .3 };
+    const CW = document.documentElement.clientWidth;
+    const C = { x: Math.max(24, Math.min(CW - 24, S.x * .25 + E.x * .75 + (E.x < S.x ? -70 : 70))), y: S.y * .7 + E.y * .3 };
     const at = (k, jx = 0, jy = 0) => { const u = 1 - k; return [u * u * S.x + 2 * u * k * C.x + k * k * E.x + jx, u * u * S.y + 2 * u * k * C.y + k * k * E.y + jy]; };
     const LEAD = 280, FLY = 1600, EASE = "cubic-bezier(.45, 0, .25, 1)", land = LEAD + FLY;
-    const layer = document.createElement("div"); layer.className = "mist"; layer.setAttribute("aria-hidden", "true"); document.body.appendChild(layer);
+    const layer = document.createElement("div"); layer.className = "mist"; layer.setAttribute("aria-hidden", "true");
+    // clipped to the page's width so stray particles never widen the page (phones would zoom out)
+    layer.style.cssText = "width:" + CW + "px;height:" + document.documentElement.scrollHeight + "px;overflow:hidden";
+    document.body.appendChild(layer);
     // guide line: draws itself along the path in step with the comet, then fades
     const NS = "http://www.w3.org/2000/svg", minX = Math.min(S.x, C.x, E.x) - 30, minY = Math.min(S.y, C.y, E.y) - 30;
     const svg = document.createElementNS(NS, "svg"), path = document.createElementNS(NS, "path");
@@ -1755,6 +1761,9 @@ window.glView = (() => {
   // wireframe: glowing lines trace an element's outline edge by edge (top, right, bottom, left), then fade
   let wires = null;
   function wire(r, d, T) {
+    // only trace pieces inside the page's width: e.g. tabs scrolled off to the side in a phone's tab row would
+    // otherwise draw outlines past the edge and make phones zoom the whole page out
+    const cw = document.documentElement.clientWidth; if (r.left < -1 || r.right > cw + 1) return;
     if (!wires || !wires.isConnected) { wires = document.createElement("div"); wires.id = "wires"; wires.setAttribute("aria-hidden", "true"); document.body.appendChild(wires); }
     const w = document.createElement("div"); w.className = "wb";
     w.style.cssText = `left:${r.left + scrollX}px;top:${r.top + scrollY}px;width:${r.width}px;height:${r.height}px;--d:${d}ms;--t:${T}ms`;
