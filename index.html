@@ -932,8 +932,17 @@ body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
 @keyframes gatepulse { 50% { box-shadow: 0 0 8px rgba(var(--glow), .3), inset 0 0 8px rgba(var(--glow), .1); } }
 body:has(.gate) .boot-music { display: none !important; }
 /* the Mute bar evaporating into the header's Mute button */
-.mist { position: fixed; inset: 0; z-index: 96; pointer-events: none; }
-.mist i { position: absolute; margin: -2px 0 0 -2px; border-radius: 50%; background: rgb(var(--glow)); box-shadow: 0 0 8px rgb(var(--glow)), 0 0 18px rgba(var(--glow), .55); }
+.mist { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; z-index: 96; pointer-events: none; }
+.mist i { position: absolute; left: 0; top: 0; border-radius: 50%; background: rgb(var(--glow)); box-shadow: 0 0 8px rgb(var(--glow)), 0 0 18px rgba(var(--glow), .6); }
+.mist b { position: absolute; left: 0; top: 0; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #fff;
+  box-shadow: 0 0 10px #fff, 0 0 24px rgb(var(--glow)), 0 0 48px rgba(var(--glow), .85); }
+.mist-path { fill: none; stroke: rgb(var(--glow)); stroke-width: 2.5; stroke-linecap: round; filter: drop-shadow(0 0 6px rgb(var(--glow))) drop-shadow(0 0 14px rgba(var(--glow), .6)); }
+.mute-hint { position: absolute; left: 50%; transform: translateX(-50%); z-index: 97; pointer-events: none; white-space: nowrap;
+  font: 700 12px var(--mono); letter-spacing: .06em; color: #001014; background: rgb(var(--glow)); padding: 8px 14px;
+  box-shadow: 0 0 22px rgba(var(--glow), .75); animation: hintin .35s ease-out; transition: opacity .5s; }
+.mute-hint.go { opacity: 0; }
+@keyframes hintin { from { opacity: 0; transform: translate(-50%, -10px); } }
+.boot-music { transition: opacity .35s, transform .35s, top .25s ease-out; }
 .amb.landed { animation: landed 1.5s ease-out; }
 /* Next song button, styled to sit beside Mute */
 .nextb .nx { font-size: 10px; letter-spacing: -2px; margin-right: 2px; }
@@ -1543,6 +1552,40 @@ renderStatus();
   wrap.addEventListener("pointerdown", e => { if (e.target === wrap) close(); });
 })();
 
+// ---------- visible-window tracker ----------
+// Some viewers (like a phone app) show this page in a frame as tall as the whole page and scroll the frame itself, so
+// "position: fixed" sticks to the page instead of the screen. This works out which slice of the page is really on screen.
+window.glView = (() => {
+  const se = document.scrollingElement || document.documentElement, subs = new Set(), vis = new Map();
+  let framed = false, strips = null, io = null, lastH = 0;
+  const tall = () => { try { return self !== top && se.scrollHeight <= innerHeight + 2 && innerHeight > (screen.height || 900) * 1.15; } catch (e) { return false; } };
+  function get() {
+    if (!framed || !vis.size) return { top: scrollY, bottom: scrollY + innerHeight, framed: false };
+    let a = Infinity, z = -Infinity; vis.forEach(r => { a = Math.min(a, r[0]); z = Math.max(z, r[1]); });
+    return { top: a, bottom: z, framed: true };
+  }
+  const tell = () => { const v = get(); subs.forEach(f => f(v)); };
+  function rebuild() {   // invisible 120px strips down the page; the browser reports which ones are on screen
+    const H = se.scrollHeight; if (strips && Math.abs(H - lastH) < 60) return; lastH = H;
+    if (io) io.disconnect(); if (strips) strips.remove(); vis.clear();
+    strips = document.createElement("div"); strips.setAttribute("aria-hidden", "true");
+    strips.style.cssText = "position:absolute;left:0;top:0;width:1px;height:0;opacity:0;pointer-events:none";
+    for (let y = 0; y < H; y += 120) { const st = document.createElement("i"); st.dataset.y = y; st.style.cssText = "position:absolute;left:0;width:1px;height:120px;top:" + y + "px"; strips.appendChild(st); }
+    document.body.appendChild(strips);
+    io = new IntersectionObserver(es => {
+      es.forEach(e => { const y = +e.target.dataset.y, b = e.boundingClientRect, r = e.intersectionRect;
+        if (e.isIntersecting && r.height > 0) vis.set(e.target, [y + r.top - b.top, y + r.bottom - b.top]); else vis.delete(e.target); });
+      tell();
+    }, { threshold: [0, .1, .2, .3, .4, .5, .6, .7, .8, .9, 1] });   // updates every ~12px of scrolling
+    strips.querySelectorAll("i").forEach(st => io.observe(st));
+  }
+  function update() { framed = tall() && "IntersectionObserver" in window; if (framed) rebuild(); tell(); }
+  addEventListener("resize", update); addEventListener("scroll", tell, { passive: true });
+  if ("ResizeObserver" in window) new ResizeObserver(() => update()).observe(document.body);
+  update();
+  return { get, on(f) { subs.add(f); return () => subs.delete(f); } };
+})();
+
 // ---------- page build-up (every open and refresh): the page constructs itself piece by piece ----------
 (() => {
   const root = document.documentElement, calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1555,38 +1598,85 @@ renderStatus();
   let muted = false;
   const BAR_MS = 7000; let barEnd = 0, barTimer = 0;
   const wantsMusic = () => window.glMusic ? window.glMusic.wants() : musicOn;
-  // the bar dissolves into a mist of glowing particles that drifts up into the header's Mute button, which flashes as it lands
+  // keep the bar at the bottom of what's on screen, even in a viewer that scrolls a tall frame
+  let unfollow = null;
+  function follow(on) {
+    if (unfollow) { unfollow(); unfollow = null; }
+    bar.style.position = bar.style.top = bar.style.bottom = "";
+    if (!on || !window.glView) return;
+    const place = v => {
+      if (!v.framed) { bar.style.position = bar.style.top = bar.style.bottom = ""; return; }
+      bar.style.position = "absolute"; bar.style.bottom = "auto"; bar.style.top = Math.round(v.bottom - bar.offsetHeight - 40) + "px";
+    };
+    place(window.glView.get()); unfollow = window.glView.on(place);
+  }
+  // a note at the top of the screen when the Mute button is scrolled out of view
+  function hint(v) {
+    const h = document.createElement("div"); h.className = "mute-hint"; h.textContent = "▲ Mute & Next are at the top of the page";
+    h.style.top = Math.round(v.top + 12) + "px"; document.body.appendChild(h);
+    setTimeout(() => h.classList.add("go"), 3600); setTimeout(() => h.remove(), 4200);
+  }
+  // the bar charges up, then breaks into a glowing mist that streams along a drawn guide line, led by a bright comet,
+  // into the header's Mute button, which flashes and gets a racing-light border
   function evaporate() {
     if (bar.hidden) return;
     const tgt = $("#ambBtn"), b = bar.getBoundingClientRect(), t = tgt && tgt.getBoundingClientRect();
-    const done = () => { bar.hidden = true; bar.classList.remove("off"); };
+    const done = () => { bar.hidden = true; bar.classList.remove("off"); follow(false); };
     if (calm || !t || !t.width || !bar.animate) { bar.classList.add("off"); setTimeout(done, 400); return; }
-    const tx = t.left + t.width / 2, ty = t.top + t.height / 2;
+    const sx = scrollX, sy = scrollY;   // everything below is in page coordinates, so it works however the page is framed
+    const S = { x: b.left + b.width / 2 + sx, y: b.top + b.height / 2 + sy }, E = { x: t.left + t.width / 2 + sx, y: t.top + t.height / 2 + sy };
+    const C = { x: S.x * .25 + E.x * .75 + (E.x < S.x ? -70 : 70), y: S.y * .7 + E.y * .3 };
+    const at = (k, jx = 0, jy = 0) => { const u = 1 - k; return [u * u * S.x + 2 * u * k * C.x + k * k * E.x + jx, u * u * S.y + 2 * u * k * C.y + k * k * E.y + jy]; };
+    const LEAD = 280, FLY = 1600, EASE = "cubic-bezier(.45, 0, .25, 1)", land = LEAD + FLY;
     const layer = document.createElement("div"); layer.className = "mist"; layer.setAttribute("aria-hidden", "true"); document.body.appendChild(layer);
-    for (let i = 0; i < 56; i++) {
-      const p = document.createElement("i"), x = b.left + Math.random() * b.width, y = b.top + Math.random() * b.height;
-      const sz = 2 + Math.random() * (Math.random() < .28 ? 14 : 4), dx = tx - x, dy = ty - y, sw = (Math.random() - .5) * 170;
-      p.style.cssText = "left:" + x + "px;top:" + y + "px;width:" + sz + "px;height:" + sz + "px;filter:blur(" + (sz > 7 ? (sz / 2.4).toFixed(1) : 0) + "px)";
-      p.animate([
-        { transform: "translate(0px, 0px) scale(.6)", opacity: 0 },
-        { transform: "translate(" + ((Math.random() - .5) * 34).toFixed(0) + "px, " + (-8 - Math.random() * 30).toFixed(0) + "px) scale(1.25)", opacity: .95, offset: .18 },
-        { transform: "translate(" + (dx * .55 + sw).toFixed(0) + "px, " + (dy * .55).toFixed(0) + "px) scale(1)", opacity: .7, offset: .6 },
-        { transform: "translate(" + dx.toFixed(0) + "px, " + dy.toFixed(0) + "px) scale(.2)", opacity: 0 }
-      ], { duration: 950 + Math.random() * 650, delay: Math.random() * 400, easing: "cubic-bezier(.45, 0, .25, 1)", fill: "both" });
+    // guide line: draws itself along the path in step with the comet, then fades
+    const NS = "http://www.w3.org/2000/svg", minX = Math.min(S.x, C.x, E.x) - 30, minY = Math.min(S.y, C.y, E.y) - 30;
+    const svg = document.createElementNS(NS, "svg"), path = document.createElementNS(NS, "path");
+    svg.setAttribute("width", Math.max(S.x, C.x, E.x) + 30 - minX); svg.setAttribute("height", Math.max(S.y, C.y, E.y) + 30 - minY);
+    svg.style.cssText = "position:absolute;overflow:visible;left:" + minX + "px;top:" + minY + "px";
+    path.setAttribute("d", "M" + (S.x - minX) + "," + (S.y - minY) + " Q" + (C.x - minX) + "," + (C.y - minY) + " " + (E.x - minX) + "," + (E.y - minY));
+    path.setAttribute("class", "mist-path"); svg.appendChild(path); layer.appendChild(svg);
+    const L = path.getTotalLength(); path.style.strokeDasharray = L + " " + L;
+    path.animate([{ strokeDashoffset: L }, { strokeDashoffset: 0 }], { duration: FLY, delay: LEAD, easing: EASE, fill: "both" });
+    path.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 700, delay: land + 250, fill: "forwards" });
+    // comet: a white-hot orb leading the way
+    const comet = document.createElement("b"); layer.appendChild(comet);
+    comet.animate(Array.from({ length: 17 }, (_, i) => { const p = at(i / 16); return { transform: "translate(" + p[0].toFixed(1) + "px, " + p[1].toFixed(1) + "px)" }; }), { duration: FLY, delay: LEAD, easing: EASE, fill: "both" });
+    comet.animate([{ opacity: 0 }, { opacity: 1, offset: .08 }, { opacity: 1, offset: .92 }, { opacity: 0 }], { duration: FLY, delay: LEAD, fill: "both" });
+    // mist: a dense stream of particles lifting off the bar and following the path, drawing in tighter as they near the button
+    for (let i = 0; i < 110; i++) {
+      const p = document.createElement("i"), big = Math.random() < .3, sz = big ? 8 + Math.random() * 12 : 3 + Math.random() * 4;
+      p.style.cssText = "width:" + sz + "px;height:" + sz + "px;margin:" + (-sz / 2) + "px 0 0 " + (-sz / 2) + "px" + (big ? ";filter:blur(" + (sz / 2.6).toFixed(1) + "px);opacity:.8" : "");
+      const x0 = b.left + sx + Math.random() * b.width, y0 = b.top + sy + Math.random() * b.height, jx = (Math.random() - .5) * 80, jy = (Math.random() - .5) * 50;
+      const frames = [0, .2, .4, .6, .8, 1].map((k, n) => {
+        const q = n === 0 ? [x0, y0] : at(k, jx * (1 - k), jy * (1 - k));
+        return { transform: "translate(" + q[0].toFixed(1) + "px, " + q[1].toFixed(1) + "px) scale(" + (1.3 - k * 1.05).toFixed(2) + ")" };
+      });
+      const dur = FLY * (.8 + Math.random() * .4), delay = LEAD * .4 + Math.random() * 520;
+      p.animate(frames, { duration: dur, delay, easing: EASE, fill: "both" });
+      p.animate([{ opacity: 0 }, { opacity: 1, offset: .12 }, { opacity: .85, offset: .75 }, { opacity: 0 }], { duration: dur, delay, fill: "both" });
       layer.appendChild(p);
     }
-    const fade = bar.animate([{ opacity: 1, filter: "blur(0px)", transform: "translate(-50%, 0px)" }, { opacity: 0, filter: "blur(12px)", transform: "translate(-50%, -18px) scale(1.08)" }], { duration: 700, easing: "ease-out", fill: "forwards" });
+    // the bar charges up bright, then dissolves upward
+    const fade = bar.animate([
+      { opacity: 1, filter: "brightness(1) blur(0px)", transform: "translate(-50%, 0px)" },
+      { opacity: 1, filter: "brightness(2.3) blur(0px)", transform: "translate(-50%, 0px) scale(1.05)", offset: .3 },
+      { opacity: 0, filter: "brightness(2) blur(14px)", transform: "translate(-50%, -18px) scale(1.12)" }
+    ], { duration: 850, easing: "ease-out", fill: "forwards" });
     fade.finished.then(() => { done(); fade.cancel(); }, done);
-    setTimeout(() => { tgt.classList.remove("landed"); void tgt.offsetWidth; tgt.classList.add("landed"); }, 1100);
-    setTimeout(() => { layer.remove(); tgt.classList.remove("landed"); }, 2700);
-    // then 2 seconds of light racing around the button's border, fading back to normal
-    setTimeout(() => { tgt.classList.remove("spot"); void tgt.offsetWidth; tgt.classList.add("spot"); }, 1300);
-    setTimeout(() => tgt.classList.remove("spot"), 1300 + 2600);
+    // landing: flash, then 2 seconds of light racing around the button's border
+    setTimeout(() => { tgt.classList.remove("landed"); void tgt.offsetWidth; tgt.classList.add("landed"); }, land - 60);
+    setTimeout(() => { tgt.classList.remove("spot"); void tgt.offsetWidth; tgt.classList.add("spot"); }, land + 150);
+    setTimeout(() => tgt.classList.remove("spot"), land + 150 + 2600);
+    setTimeout(() => { layer.remove(); tgt.classList.remove("landed"); }, land + 1500);
+    // if the button is above what's on screen, say where the mist went
+    const v = window.glView ? window.glView.get() : { top: scrollY, bottom: scrollY + innerHeight };
+    if (E.y < v.top + 8) setTimeout(() => hint(v), LEAD + FLY * .5);
   }
   const barFor = ms => { clearTimeout(barTimer); barEnd = performance.now() + ms; barTimer = setTimeout(evaporate, ms); };
   mute.addEventListener("click", e => { e.stopPropagation(); muted = true; bar.classList.remove("tap"); cnt.textContent = "Music off — press Play anytime"; mute.textContent = "Muted"; mute.disabled = true; window.glMusic && window.glMusic.mute(); barFor(1300); });
-  window.glMusicBlocked = () => { if (muted || !wantsMusic()) return; clearTimeout(barTimer); bar.hidden = false; bar.classList.remove("off"); bar.classList.add("tap"); cnt.textContent = "♫ Tap anywhere to start the music"; };
-  window.glShowMusicBar = () => { if (muted || !wantsMusic()) return; bar.hidden = false; bar.classList.remove("off", "tap"); barFor(BAR_MS); };
+  window.glMusicBlocked = () => { if (muted || !wantsMusic()) return; clearTimeout(barTimer); bar.hidden = false; follow(true); bar.classList.remove("off"); bar.classList.add("tap"); cnt.textContent = "♫ Tap anywhere to start the music"; };
+  window.glShowMusicBar = () => { if (muted || !wantsMusic()) return; bar.hidden = false; follow(true); bar.classList.remove("off", "tap"); barFor(BAR_MS); };
   window.glMusicStarted = () => { if (muted) return; bar.classList.remove("tap"); cnt.textContent = "♫ Music on"; if (!bar.hidden) barFor(Math.max(2500, barEnd - performance.now())); };
   if (musicOn && !gated) {   // reduced motion: no INITIALIZE screen, so count down and start the music on its own
     window.glBootMs = 3000; window.glShowMusicBar();
@@ -1610,8 +1700,14 @@ renderStatus();
     const g = document.createElement("div"); g.className = "gate"; g.setAttribute("role", "dialog"); g.setAttribute("aria-label", "Start the page");
     g.innerHTML = '<div class="gate-in"><button type="button" class="go">Initialize</button><span>Power up with music</span><button type="button" class="skip">Skip · no music</button></div>';
     document.body.appendChild(g);
+    const inner = g.querySelector(".gate-in");
+    const center = v => {
+      if (!v.framed) { g.style.placeItems = ""; inner.style.marginTop = ""; return; }
+      g.style.placeItems = "start center"; inner.style.marginTop = Math.max(0, Math.round((v.top + v.bottom) / 2 - inner.offsetHeight / 2 - 24)) + "px";
+    };
+    const unview = window.glView ? (center(window.glView.get()), window.glView.on(center)) : () => {};
     g.addEventListener("click", e => {
-      const skip = !!e.target.closest(".skip"); g.remove();
+      const skip = !!e.target.closest(".skip"); g.remove(); unview();
       if (window.glMusic) { if (skip) window.glMusic.skip(); else { window.glMusic.play(); window.glShowMusicBar && window.glShowMusicBar(); } }
       build();
     }, { once: true });
@@ -1837,6 +1933,7 @@ renderStatus();
   addEventListener("resize", fit); fit();
   // beat tracker: reads the bass and highs and shares them (window.glBeat) so the lightning backgrounds react,
   let lastBeat = 0, prevLow = 0, fast = 0, slow = .3, hist = [], histAt = 0, lastDrop = 0;
+  let lowAvg = .2, prevBins = null, fluxAvg = .01, lastOnset = 0;   // adaptive bass level + onsets in the mids and highs
   window.glBeat = { level: 0, beat: 0 };
   function draw() {
     raf = requestAnimationFrame(draw);
@@ -1847,9 +1944,18 @@ renderStatus();
     if (!bins) bins = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteFrequencyData(bins);
     let low = 0; for (let i = 1; i < 5; i++) low += bins[i]; low /= 4 * 255;
-    level = Math.max(low, level * .9);
-    if (low > .55 && low > prevLow * 1.08 && now - lastBeat > 260) { lastBeat = now; window.glBeat.beat = now; }
+    let mid = 0; for (let i = 5; i < 60; i++) mid += bins[i]; mid /= 55 * 255;
+    level = Math.max(low, mid * 1.15, level * .9);
+    lowAvg = lowAvg * .97 + low * .03;
+    // a kick: loud bass, or bass jumping well above this song's own average (so quieter, lighter songs still count)
+    if (((low > .55 && low > prevLow * 1.08) || (low > .16 && low > lowAvg * 1.4 && low > prevLow * 1.05)) && now - lastBeat > 260) { lastBeat = now; window.glBeat.beat = now; }
     prevLow = low; window.glBeat.level = level;
+    // onsets: snares, hats, plucks and synth stabs - a sudden rise across the mids and highs
+    let flux = 0;
+    if (prevBins) { for (let i = 5; i < 160; i++) { const d = bins[i] - prevBins[i]; if (d > 0) flux += d; } flux /= 155 * 255; }
+    else prevBins = new Uint8Array(bins.length);
+    prevBins.set(bins); fluxAvg = fluxAvg * .95 + flux * .05;
+    if (flux > .02 && flux > fluxAvg * 1.9 && now - lastOnset > 170) { lastOnset = now; window.glBeat.onset = now; window.glBeat.onsetPow = Math.min(1, flux / (fluxAvg * 4 + .001)); }
     { let hi = 0; for (let i = 90; i < 200; i++) hi += bins[i]; window.glBeat.hi = hi / (110 * 255); }
     meters();
     // drop detection: the sub-bass jumps by a lot compared with its lowest point in the last 4 s (the end of a
@@ -2034,7 +2140,7 @@ renderStatus();
   const root = document.documentElement, calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
   const cv = document.createElement("canvas"); cv.id = "boltFx"; cv.setAttribute("aria-hidden", "true"); document.body.prepend(cv);
   const g = cv.getContext("2d");
-  let W = 0, H = 0, raf = 0, bolts = [], rgb = "0, 240, 255", rgbAt = 0, seenBeat = 0, nextIdle = 0, prevHi = 0, lastCrackle = 0;
+  let W = 0, H = 0, raf = 0, bolts = [], rgb = "0, 240, 255", rgbAt = 0, seenBeat = 0, nextIdle = 0, prevHi = 0, lastCrackle = 0, seenOnset = 0, lastAny = 0;
   const rnd = (a, b) => a + Math.random() * (b - a);
   function fit() { const d = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight; cv.width = W * d; cv.height = H * d; g.setTransform(d, 0, 0, d, 0, 0); }
   // midpoint displacement gives the jagged, organic path
@@ -2098,14 +2204,20 @@ renderStatus();
     const now = performance.now(), B = window.glBeat || { level: 0, beat: 0 }, L = B.level || 0;
     if (now - rgbAt > 1000) { rgb = getComputedStyle(root).getPropertyValue("--glow").trim() || rgb; rgbAt = now; }
     if (B.beat && B.beat !== seenBeat) {
-      seenBeat = B.beat; if (Math.random() < .45) strike(L);
+      seenBeat = B.beat; lastAny = now; if (Math.random() < .7) strike(Math.max(.45, L));
       const n = 1 + Math.floor(Math.max(0, L - .7) * 4);                  // heavier bass = more, thicker edge bolts on both sides
-      for (let i = 0; i < n; i++) { if (i || Math.random() < .7) { edgeStrike(true, L); edgeStrike(false, L); } }
+      for (let i = 0; i < n; i++) { edgeStrike(true, Math.max(.4, L)); edgeStrike(false, Math.max(.4, L)); }
     }
     const full = root.dataset.bg === "thunder";
     if (full && B.hi !== undefined && B.hi > .32 && B.hi > prevHi * 1.25 && now - lastCrackle > 140) { lastCrackle = now; crackle(); }
     prevHi = B.hi || 0;
-    if (full && L < .05 && now > nextIdle) { strike(.4); nextIdle = now + rnd(1800, 4500); }   // no music: a strike every few seconds
+    // onsets (snares, hats, synth stabs): a side bolt, sometimes a full strike - lightning for songs without much bass
+    if (B.onset && B.onset !== seenOnset) {
+      seenOnset = B.onset; const pw = .35 + .45 * (B.onsetPow || .5);
+      if (now - lastAny > 140) { lastAny = now; if (Math.random() < .6) edgeStrike(Math.random() < .5, pw); if (Math.random() < .28) strike(pw * .85); }
+    }
+    // never still for long: an ambient strike every couple of seconds when nothing else has fired
+    if (now > nextIdle && now - lastAny > 1100) { lastAny = now; if (Math.random() < .55) strike(.5); else edgeStrike(Math.random() < .5, .55); nextIdle = now + rnd(1300, 3000); }
     draw(now);
   }
   function sync() {
